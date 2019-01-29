@@ -4,6 +4,8 @@
 #include <ATen/core/SparseTensorRef.h>
 #include <ATen/ExpandUtils.h>
 
+#include <chrono>
+
 namespace at { namespace native {
 
 namespace {
@@ -114,13 +116,17 @@ Tensor& addmm_out(Tensor& result, const Tensor& self, const Tensor& mat1, const 
 
 Tensor addmm(const Tensor& self, const Tensor& mat1, const Tensor& mat2, Scalar beta, Scalar alpha) {
   // See Note [Multiple dispatch to sparse]
+  auto start = std::chrono::steady_clock::now();
   auto mat1_sparse = mat1.is_sparse();
   if (mat1_sparse) {
     Tensor b_self;
     std::tie(b_self) = expand_size(self, {mat1.size(0), mat2.size(1)}, "addmm");
     return s_native_addmm(b_self, mat1, mat2, beta, alpha);
   } else {
-    return legacy::th::_th_addmm(self, mat1, mat2, beta, alpha);
+    auto out = legacy::th::_th_addmm(self, mat1, mat2, beta, alpha);
+    auto end = std::chrono::steady_clock::now();
+    std::cout << std::chrono::nanoseconds(end-start).count() << "\n";
+    return out;
   }
 }
 

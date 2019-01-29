@@ -3,6 +3,7 @@
 #else
 
 #include "ATen/cuda/CUDAContext.h"
+#include <chrono>
 
 #define ERROR_ONLY_FP_TYPES(func) \
   THError("%s for CUDA tensors only supports floating-point types. Try converting the tensors with .float()", func);
@@ -251,6 +252,7 @@ void THCTensor_(addr)(THCState *state, THCTensor *r_, scalar_t beta, THCTensor *
 void THCTensor_(addmm)(THCState *state, THCTensor *r_, scalar_t beta, THCTensor *t, scalar_t alpha, THCTensor *m1, THCTensor *m2)
 {
 #if defined(THC_REAL_IS_HALF) || defined(THC_REAL_IS_FLOAT) || defined(THC_REAL_IS_DOUBLE)
+  auto start = std::chrono::steady_clock::now();
 
   THCAssertSameGPU(THCTensor_(checkGPU)(state, 4, r_, t, m1, m2));
   char transpose_r, transpose_m1, transpose_m2;
@@ -346,6 +348,9 @@ void THCTensor_(addmm)(THCState *state, THCTensor *r_, scalar_t beta, THCTensor 
     transpose_m2 = (transpose_r == 'n' ? 't' : 'n');
     m2_ = THCTensor_(newContiguous)(state, m2);
   }
+  auto end_prep = std::chrono::steady_clock::now();
+ 
+  
 
 #ifdef THC_REAL_IS_HALF
   THCudaBlas_Hgemm(state,
@@ -406,6 +411,8 @@ void THCTensor_(addmm)(THCState *state, THCTensor *r_, scalar_t beta, THCTensor 
   if(r__ != r_) {
     THCTensor_(freeCopyTo)(state, r__, r_);
   }
+  auto end = std::chrono::steady_clock::now();
+//  std::cout << std::setw(10) << (int)(std::chrono::duration <double, std::nano> (end_prep-start).count()) << std::setw(10) << (int)(std::chrono::duration <double, std::nano> (end-start).count());
 #else
   ERROR_ONLY_FP_TYPES("addmm");
 #endif

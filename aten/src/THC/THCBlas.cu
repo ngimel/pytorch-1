@@ -4,6 +4,7 @@
 #include <ATen/cuda/CUDAContext.h>
 
 #include <algorithm>
+#include <chrono>
 
 float THCudaBlas_Sdot(THCState *state, int64_t n, float *x, int64_t incx, float *y, int64_t incy)
 {
@@ -270,6 +271,7 @@ void THCudaBlas_Sgemm(THCState *state, char transa, char transb, int64_t m, int6
 
 void THCudaBlas_Hgemm(THCState *state, char transa, char transb, int64_t m, int64_t n, int64_t k, at::Half alpha, at::Half *a, int64_t lda, at::Half *b, int64_t ldb, at::Half beta, at::Half *c, int64_t ldc)
 {
+  auto start = std::chrono::steady_clock::now();
   adjustLdLevel3(transa, transb, m, n, k, &lda, &ldb, &ldc);
   cublasOperation_t opa = convertTransToCublasOperation(transa);
   cublasOperation_t opb = convertTransToCublasOperation(transb);
@@ -306,13 +308,16 @@ void THCudaBlas_Hgemm(THCState *state, char transa, char transb, int64_t m, int6
                                   i_ldb, &fBeta, c, CUDA_R_16F, i_ldc));
 #else
       cudaDeviceProp* prop = at::cuda::getCurrentDeviceProperties();
+      std::chrono::time_point<std::chrono::steady_clock> before_cublas_call, after_cublas_call;
       if (prop->major >= 5){
         THCublasCheck(cublasSetMathMode(handle, CUBLAS_TENSOR_OP_MATH));
+        before_cublas_call = std::chrono::steady_clock::now();
 	THCublasCheck(cublasGemmEx(handle, opa, opb,
                                    i_m, i_n, i_k, &fAlpha,
                                    a, CUDA_R_16F, i_lda, b, CUDA_R_16F,
                                    i_ldb, &fBeta, c, CUDA_R_16F, i_ldc,
                                    CUDA_R_32F, CUBLAS_GEMM_DFALT_TENSOR_OP));
+        after_cublas_call = std::chrono::steady_clock::now();
 	THCublasCheck(cublasSetMathMode(handle, CUBLAS_DEFAULT_MATH));
       }else{
         THCublasCheck(cublasSgemmEx(handle, opa, opb,
@@ -322,6 +327,8 @@ void THCudaBlas_Hgemm(THCState *state, char transa, char transb, int64_t m, int6
       }
 #endif
 #endif
+      auto end = std::chrono::steady_clock::now();
+      std::cout << std::setw(10) << std::chrono::nanoseconds(end-start).count() << std::setw(10) << std::chrono::nanoseconds(after_cublas_call - before_cublas_call).count() << "\n";
       return;
     }
   THError("Cublas_Hgemm only supports m, n, k, lda, ldb, ldc"
