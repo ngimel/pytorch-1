@@ -275,6 +275,8 @@ _(aten, cudnn_convolution_transpose_backward) \
 _(aten, cudnn_convolution_transpose_backward_bias) \
 _(aten, cudnn_convolution_transpose_backward_input) \
 _(aten, cudnn_convolution_transpose_backward_weight) \
+_(aten, conv_depthwise2d) \
+_(aten, conv_depthwise2d_backward) \
 _(aten, cudnn_grid_sampler) \
 _(aten, cudnn_grid_sampler_backward) \
 _(aten, cudnn_is_acceptable) \
@@ -651,9 +653,6 @@ _(aten, thnn_conv2d_forward) \
 _(aten, thnn_conv3d) \
 _(aten, thnn_conv3d_backward) \
 _(aten, thnn_conv3d_forward) \
-_(aten, thnn_conv_depthwise2d) \
-_(aten, thnn_conv_depthwise2d_backward) \
-_(aten, thnn_conv_depthwise2d_forward) \
 _(aten, slow_conv_dilated2d) \
 _(aten, slow_conv_dilated2d_backward) \
 _(aten, slow_conv_dilated3d) \
