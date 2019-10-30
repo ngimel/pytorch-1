@@ -1,5 +1,6 @@
 // adopted from SpatialDepthwiseConvolution.cu
 #include <ATen/ATen.h>
+#include <ATen/AccumulateType.h>
 #include <ATen/NativeFunctions.h>
 #include <ATen/TensorUtils.h>
 #include <ATen/Utils.h>
@@ -27,6 +28,7 @@ const int WARP_SIZE = 32;
 // Crude benchmarks suggest 256 is better than 512 and 1024
 // TODO: Autotune/use better heuristics, improve speed more.
 const int MAX_BLOCK_SIZE = 256;
+const int MAX_THREADS = 1024;
 
 static int getGradParamsNumThreads(int batchSize){
 //warp per item in a batch, up to a maximum
@@ -36,10 +38,10 @@ static int getGradParamsNumThreads(int batchSize){
 // Your regular forward pass hopefully
 template <typename T, typename accT, typename IndexType, int kSize>
 __global__ void depthwiseConv3DOutput(
-    const Tensor& input,
-    Tensor& output,
-    const Tensor& weight,
-    const Tensor& bias,
+    const T * input,
+    T * output,
+    const T * weight,
+    const T * bias,
     bool biasEnabled,
     IndexType totalElements,
     const int outputChannels,
@@ -85,7 +87,7 @@ __global__ void depthwiseConv3DOutput(
 
     int weightOffset = c * kernelTime * kernelHeight * kernelWidth;
 
-    accT value = biasEnabled ? ScalarConvert<T, accT>::to(bias.data()[c])
+    accT value = biasEnabled ? ScalarConvert<T, accT>::to(bias[c])
       : ScalarConvert<int, accT>::to(0);
     const IndexType offset0 = (n * inputChannels + inputChannel) * inputTime
       * inputHeight * inputWidth;
@@ -110,25 +112,25 @@ __global__ void depthwiseConv3DOutput(
           {
             const IndexType offset =
               offset0 + (l_in * inputHeight + h_in) * inputWidth + w_in;
-            value = add(
+            value = THCNumerics<accT>::add(
               value,
-              mul(
-                ScalarConvert<T, accT>::to(weight.data()[weightOffset]),
-                ScalarConvert<T, accT>::to(input.data()[offset])));
+              THCNumerics<accT>::mul(
+                ScalarConvert<T, accT>::to(weight[weightOffset]),
+                ScalarConvert<T, accT>::to(input[offset])));
           }
           ++weightOffset;
         }
       }
-      output.data()[linearIndex] = ScalarConvert<accT, T>::to(value);
+      output[linearIndex] = ScalarConvert<accT, T>::to(value);
     }
   }
 }
 
 template <typename T, typename accT, typename IndexType, int kSize, int stride>
 __global__ void depthwiseConv3dUpdateGradInput(
-    const Tensor& gradOutput,
-    Tensor& gradInput,
-    const Tensor& weight,
+    const T * gradOutput,
+    T * gradInput,
+    const T * weight,
     IndexType totalElements,
     const int inputChannels,
     const int outputChannels,
@@ -194,27 +196,27 @@ __global__ void depthwiseConv3dUpdateGradInput(
               const int offset =
                 (((n * outputChannels + c) * outputTime + l_out)
                   * outputHeight + h_out) * outputWidth + w_out;
-              value = add(
+              value = THCNumerics<accT>::add(
                 value,
-                mul(
-                  ScalarConvert<T, accT>::to(weight.data()[weightOffset]),
-                  ScalarConvert<T, accT>::to(gradOutput.data()[offset])));
+                THCNumerics<accT>::mul(
+                  ScalarConvert<T, accT>::to(weight[weightOffset]),
+                  ScalarConvert<T, accT>::to(gradOutput[offset])));
             }
           }
           ++weightOffset;
         }
       }
     }
-    gradInput.data()[linearIndex] = ScalarConvert<accT, T>::to(value);
+    gradInput[linearIndex] = ScalarConvert<accT, T>::to(value);
   }
 }
 
 
 template <typename T, typename accT, typename IndexType>
 __global__ void depthwiseConv3dUpdateGradWeight(
-    const Tensor& gradOutput,
-    const Tensor& input,
-    Tensor& gradWeight,
+    const T * gradOutput,
+    const T * input,
+    T * gradWeight,
     const int batchSize,
     const int inputChannels,
     const int kernelChannels,
@@ -270,11 +272,11 @@ __global__ void depthwiseConv3dUpdateGradWeight(
           + i_l_offset) * inputHeight + i_h_offset) * inputWidth + i_w_offset;
         int outputOffset = (((batchIdx * kernelChannels + ch) * outputTime)
           * outputHeight ) * outputWidth + idx;
-        grad = add(
+        grad = THCNumerics<accT>::add(
             grad,
-            mul(
-              ScalarConvert<T, accT>::to(input.data()[inputOffset]),
-              ScalarConvert<T, accT>::to(gradOutput.data()[outputOffset])));
+            THCNumerics<accT>::mul(
+              ScalarConvert<T, accT>::to(input[inputOffset]),
+              ScalarConvert<T, accT>::to(gradOutput[outputOffset])));
       }
     }
   }
@@ -292,7 +294,7 @@ __global__ void depthwiseConv3dUpdateGradWeight(
   if (threadIdx.x == 0) {
     int weightOffset = kW + kernelWidth * (kH + kernelHeight
       * (kT + kernelTime * ch));
-    gradWeight.data()[weightOffset] = ScalarConvert<accT, T>::to(tval);
+    gradWeight[weightOffset] = ScalarConvert<accT, T>::to(tval);
   }
 }
 
@@ -301,8 +303,8 @@ __global__ void depthwiseConv3dUpdateGradWeight(
 static void conv_depthwise3d_cuda_template(
   Tensor& output,
   const Tensor& input_,
-  Tensor& weight,
-  Tensor? bias,
+  const Tensor& weight,
+  const Tensor& bias,
   IntArrayRef kernel_size,
   IntArrayRef stride_size,
   IntArrayRef pad_size,
@@ -331,14 +333,14 @@ static void conv_depthwise3d_cuda_template(
     int64_t osizeW = output.size(4);  // output width
 
     int64_t sizeB, sizeD, isizeT, isizeH, isizeW;
-    int64_t istrideD, istrideT, istrideH, istrideW;
+    //int64_t istrideD, istrideT, istrideH, istrideW;
     int64_t totalZ;
     
-    sizeB  = input.size(0);
-    sizeD = input.size(1);
-    isizeT = input.size(2);
-    isizeH = input.size(3);
-    isizeW = input.size(4);
+    sizeB  = input_.size(0);
+    sizeD = input_.size(1);
+    isizeT = input_.size(2);
+    isizeH = input_.size(3);
+    isizeW = input_.size(4);
 
     const Tensor& input = input_.contiguous();
     output.resize_({sizeB, sizeD, osizeT, osizeH, osizeW});
@@ -362,7 +364,7 @@ static void conv_depthwise3d_cuda_template(
     int64_t dilSizeH = dilation_size[1];
     int64_t dilSizeT = dilation_size[2];
 
-    bool bias_flag = (bias != NULL);
+    bool bias_flag = !bias.defined();
 
     // settring up the CUDA dispatch
     unsigned int n = output.numel() / sizeB;
@@ -371,20 +373,19 @@ static void conv_depthwise3d_cuda_template(
 
     dim3 gdim{cuda::ATenCeilDiv(n, bdim.x)};
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-
-    
-
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(
-      input.scalar_type(), "conv_depthwise3d_cuda", [&] {
+      input_.scalar_type(), "conv_depthwise3d_cuda", [&] {
         using accscalar_t = at::acc_type<scalar_t, true>;
 
         scalar_t* input_data = input.data_ptr<scalar_t>();
         scalar_t* output_data = output.data_ptr<scalar_t>();
+        scalar_t* weight_data = weight.data_ptr<scalar_t>();
+        scalar_t* bias_data = bias.data_ptr<scalar_t>();
         if (kernelSizeW == 3 && kernelSizeH == 3 && kernelSizeT == 3) {
           depthwiseConv3DOutput<scalar_t, accscalar_t, unsigned int, 3><<<gdim, bdim, 0, stream>>>(
             input_data, output_data,
-            weight,
-            bias,
+            weight_data,
+            bias_data,
             bias_flag, // if true, bias is not null
             totalZ, // totalElements
             osizeD, // ouptut_channels
@@ -397,8 +398,8 @@ static void conv_depthwise3d_cuda_template(
         } else if (kernelSizeW == 1 && kernelSizeH == 1 && kernelSizeT == 1) {
           depthwiseConv3DOutput<scalar_t, accscalar_t, unsigned int, 1><<<gdim, bdim, 0, stream>>>(
             input_data, output_data,
-            weight,
-            bias,
+            weight_data,
+            bias_data,
             bias_flag, // if true, bias is not null
             totalZ, // totalElements
             osizeD, // ouptut_channels
@@ -411,8 +412,8 @@ static void conv_depthwise3d_cuda_template(
         } else {
           depthwiseConv3DOutput<scalar_t, accscalar_t, unsigned int, 0><<<gdim, bdim, 0, stream>>>(
             input_data, output_data,
-            weight,
-            bias,
+            weight_data,
+            bias_data,
             bias_flag, // if true, bias is not null
             totalZ, // totalElements
             osizeD, // ouptut_channels
@@ -490,7 +491,7 @@ void conv_depthwise3d_backward_input_cuda_template(
   int64_t dilSizeT = dilation_size[2];
 
   // upsample_3d_shape_check makes sure `nbatch != 0`
-  unsigned int n = grad_input.numel() / sizeB;
+  unsigned int n = gradInput.numel() / sizeB;
   dim3 bdim{std::min<unsigned int>(
       at::cuda::getCurrentDeviceProperties()->maxThreadsPerBlock, MAX_THREADS)};
   dim3 gdim{cuda::ATenCeilDiv(n, bdim.x)};
@@ -502,11 +503,12 @@ void conv_depthwise3d_backward_input_cuda_template(
 
       scalar_t* gradInput_data = gradInput.data_ptr<scalar_t>();
       scalar_t* gradOutput_data = gradOutput.data_ptr<scalar_t>();
+      scalar_t* weight_data = weight.data_ptr<scalar_t>();
       if (kernelSizeW == 3 && kernelSizeH == 3 && kernelSizeT == 3) 
         if (strideSizeH == 1 && strideSizeW == 1 && strideSizeT == 1){
           depthwiseConv3dUpdateGradInput<scalar_t, accscalar_t, unsigned int, 3, 1><<<gdim, bdim, 0, stream>>>(
               gradOutput_data, gradInput_data,
-              weight,
+              weight_data,
               totalZ, //total elements
               sizeD,  // input channels
               osizeD, // ouptut channels 
@@ -519,7 +521,7 @@ void conv_depthwise3d_backward_input_cuda_template(
         } else if (strideSizeH == 2 && strideSizeW == 2 && strideSizeT == 2){
           depthwiseConv3dUpdateGradInput<scalar_t, accscalar_t, unsigned int, 3, 2><<<gdim, bdim, 0, stream>>>(
             gradOutput_data, gradInput_data,
-            weight,
+            weight_data,
             totalZ, //total elements
             sizeD,  // input channels
             osizeD, // ouptut channels 
@@ -532,7 +534,7 @@ void conv_depthwise3d_backward_input_cuda_template(
           } else {
             depthwiseConv3dUpdateGradInput<scalar_t, accscalar_t, unsigned int, 3, 0><<<gdim, bdim, 0, stream>>>(
               gradOutput_data, gradInput_data,
-              weight,
+              weight_data,
               totalZ, //total elements
               sizeD,  // input channels
               osizeD, // ouptut channels 
@@ -547,7 +549,7 @@ void conv_depthwise3d_backward_input_cuda_template(
         if (strideSizeH == 1 && strideSizeW == 1 && strideSizeT == 1){
           depthwiseConv3dUpdateGradInput<scalar_t, accscalar_t, unsigned int, 1, 1><<<gdim, bdim, 0, stream>>>(
               gradOutput_data, gradInput_data,
-              weight,
+              weight_data,
               totalZ, //total elements
               sizeD,  // input channels
               osizeD, // ouptut channels 
@@ -560,7 +562,7 @@ void conv_depthwise3d_backward_input_cuda_template(
         } else if (strideSizeH == 2 && strideSizeW == 2 && strideSizeT == 2){
           depthwiseConv3dUpdateGradInput<scalar_t, accscalar_t, unsigned int, 1, 2><<<gdim, bdim, 0, stream>>>(
             gradOutput_data, gradInput_data,
-            weight,
+            weight_data,
             totalZ, //total elements
             sizeD,  // input channels
             osizeD, // ouptut channels 
@@ -573,7 +575,7 @@ void conv_depthwise3d_backward_input_cuda_template(
         } else {
           depthwiseConv3dUpdateGradInput<scalar_t, accscalar_t, unsigned int, 1, 0><<<gdim, bdim, 0, stream>>>(
             gradOutput_data, gradInput_data,
-            weight,
+            weight_data,
             totalZ, //total elements
             sizeD,  // input channels
             osizeD, // ouptut channels 
@@ -588,7 +590,7 @@ void conv_depthwise3d_backward_input_cuda_template(
       if (strideSizeH == 1 && strideSizeW == 1 && strideSizeT == 1){
         depthwiseConv3dUpdateGradInput<scalar_t, accscalar_t, unsigned int, 0, 1><<<gdim, bdim, 0, stream>>>(
             gradOutput_data, gradInput_data,
-            weight,
+            weight_data,
             totalZ, //total elements
             sizeD,  // input channels
             osizeD, // ouptut channels 
@@ -601,7 +603,7 @@ void conv_depthwise3d_backward_input_cuda_template(
       } else if (strideSizeH == 2 && strideSizeW == 2 && strideSizeT == 2){
         depthwiseConv3dUpdateGradInput<scalar_t, accscalar_t, unsigned int, 0, 2><<<gdim, bdim, 0, stream>>>(
           gradOutput_data, gradInput_data,
-          weight,
+          weight_data,
           totalZ, //total elements
           sizeD,  // input channels
           osizeD, // ouptut channels 
@@ -614,7 +616,7 @@ void conv_depthwise3d_backward_input_cuda_template(
       } else {
         depthwiseConv3dUpdateGradInput<scalar_t, accscalar_t, unsigned int, 0, 0><<<gdim, bdim, 0, stream>>>(
           gradOutput_data, gradInput_data,
-          weight,
+          weight_data,
           totalZ, //total elements
           sizeD,  // input channels
           osizeD, // ouptut channels 
@@ -659,10 +661,10 @@ void conv_depthwise3d_backward_weight_cuda_template(
   isizeH = input.size(3);
   isizeW = input.size(4);
 
-  osizeD = gradOutput.size(1);
-  osizeT = gradOutput.size(2);
-  osizeH = gradOutput.size(3);
-  osizeW = gradOutput.size(4);
+  osizeD = gradOutput_.size(1);
+  osizeT = gradOutput_.size(2);
+  osizeH = gradOutput_.size(3);
+  osizeW = gradOutput_.size(4);
 
   int kernelC = osizeD / sizeD;
   
@@ -690,7 +692,7 @@ void conv_depthwise3d_backward_weight_cuda_template(
   int64_t dilSizeT = dilation_size[2];
 
     // settring up the CUDA dispatch
-    unsigned int n = osizeD * kernelSizeH * kernelSizeT * kernelSizeD;
+    unsigned int n = osizeD * kernelSizeH * kernelSizeT * kernelSizeW;
     dim3 bdim{std::min<unsigned int>(
         at::cuda::getCurrentDeviceProperties()->maxThreadsPerBlock, MAX_THREADS)};
 
@@ -702,11 +704,12 @@ void conv_depthwise3d_backward_weight_cuda_template(
       using accscalar_t = at::acc_type<scalar_t, true>;
       scalar_t* gradWeight_data = gradWeight.data_ptr<scalar_t>();
       scalar_t* gradOutput_data = gradOutput.data_ptr<scalar_t>();
+      scalar_t* input_data = input.data_ptr<scalar_t>();
 
-      int smem = block.x * sizeof(accscalar_t);
+      int smem = bdim.x * sizeof(accscalar_t);
 
-      depthwiseConv3dUpdateGradWeight<scalar_t, accscalar_t, unsigned int><<<grid, block, smem, THCState_getCurrentStream(state)>>>(
-          gradOutput_data, input, gradWeight_data,
+      depthwiseConv3dUpdateGradWeight<scalar_t, accscalar_t, unsigned int><<<gdim, bdim, smem, stream>>>(
+          gradOutput_data, input_data, gradWeight_data,
           sizeB,  // batch size
           sizeD,  // input channels
           kernelC, // ouptut channels (should be kernelchannels? where is that)
@@ -729,11 +732,11 @@ Tensor _conv_depthwise3d_forward_cuda(
   Tensor& output,
   const Tensor& input,
   const Tensor& weight,
-  Tensor? bias,
-  IntList kernel_size,
-  IntList stride_size,
-  IntList pad_size,
-  IntList dilation_size
+  Tensor bias,
+  IntArrayRef kernel_size,
+  IntArrayRef stride_size,
+  IntArrayRef pad_size,
+  IntArrayRef dilation_size
 )
 {
   conv_depthwise3d_cuda_template(
@@ -765,16 +768,16 @@ Tensor _conv3d_depthwise3d_backward_input_cuda(
   const Tensor& gradOutput,
   const Tensor& input,
   const Tensor& weight,
-  IntList kernel_size,
-  IntList stride_size,
-  IntList pad_size,
-  IntList dilation_size
+  IntArrayRef kernel_size,
+  IntArrayRef stride_size,
+  IntArrayRef pad_size,
+  IntArrayRef dilation_size
 )
 {
   conv_depthwise3d_backward_input_cuda_template(
-    gradInput, gradOutput, weight,
+    gradInput, gradOutput, input, weight,
     kernel_size, stride_size, pad_size, dilation_size
-  )
+  );
   return gradInput;
 }
 
@@ -783,16 +786,16 @@ Tensor _conv3d_depthwise3d_backward_weight_cuda(
   Tensor& gradWeight,
   const Tensor& gradOutput,
   const Tensor& input,
-  IntList kernel_size,
-  IntList stride_size,
-  IntList pad_size,
-  IntList dilation_size
+  IntArrayRef kernel_size,
+  IntArrayRef stride_size,
+  IntArrayRef pad_size,
+  IntArrayRef dilation_size
 )
 {
   conv_depthwise3d_backward_weight_cuda_template(
     gradWeight, gradOutput, input,
     kernel_size, stride_size, pad_size, dilation_size
-  )
+  );
   return gradWeight;
 }
 
@@ -801,16 +804,16 @@ Tensor _conv3d_depthwise3d_backward_weight_cuda(
 Tensor conv_depthwise3d_cuda(
   const Tensor& input,
   const Tensor& weight,
-  Tensor? bias,
-  IntList kernel_size,
-  IntList stride_size,
-  IntList pad_size,
-  IntList dilation_size
+  const Tensor& bias,
+  IntArrayRef kernel_size,
+  IntArrayRef stride_size,
+  IntArrayRef pad_size,
+  IntArrayRef dilation_size
 ) {
   Tensor output;
   output = _conv_depthwise3d_forward_cuda(
     output, input, weight, bias, kernel_size, stride_size, pad_size, dilation_size
-  )
+  );
   return output;
 }
 
@@ -818,10 +821,10 @@ std::tuple<at::Tensor,at::Tensor> conv_depthwise3d_backward_cuda(
   const Tensor& input,
   const Tensor& gradOutput,
   const Tensor& weight,
-  IntList kernel_size,
-  IntList stride_size,
-  IntList pad_size,
-  IntList dilation_size,
+  IntArrayRef kernel_size,
+  IntArrayRef stride_size,
+  IntArrayRef pad_size,
+  IntArrayRef dilation_size,
   std::array<bool,2> output_mask) {
 
     Tensor grad_input, grad_weight;
