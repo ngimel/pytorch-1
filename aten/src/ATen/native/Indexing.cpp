@@ -67,6 +67,8 @@ namespace at { namespace native {
 DEFINE_DISPATCH(index_stub);
 DEFINE_DISPATCH(index_put_stub);
 DEFINE_DISPATCH(index_put_accum_stub);
+DEFINE_DISPATCH(scatter_aten_stub);
+
 REGISTER_NO_CPU_DISPATCH(index_put_accum_stub, index_put_accum_fn);
 
 static bool all_strides_match(TensorList tensors) {
@@ -109,6 +111,16 @@ static Tensor restride_src(const Tensor& src, int64_t dims_before, int64_t dims_
   shape.insert(shape.begin() + dims_before, replacement_shape.begin(), replacement_shape.end());
   strides.insert(strides.begin() + dims_before, replacement_shape.size(), 0);
   return src.as_strided(shape, strides);
+}
+
+static Tensor restride_dim(const Tensor& src, int64_t dim, IntArrayRef replacement_shape){
+  auto strides = DimVector(src.strides());
+  strides[dim] = 0;
+  return src.as_strided(replacement_shape, strides);
+}
+
+static Tensor resize_to(const Tensor& src, IntArrayRef replacement_shape){
+  return src.as_strided(replacement_shape, src.strides());
 }
 
 // Add dimensions of size 1 to an index tensor so that it can be broadcast to the result
@@ -213,6 +225,20 @@ static TensorIterator make_index_put_iterator(const AdvancedIndex& info, const T
   for (auto& index : info.indices) {
     iter.add_input(index);
   }
+  iter.build();
+  return iter;
+}
+
+static TensorIterator make_scatter_iterator(Tensor & self, int64_t dim, const Tensor & index, const Tensor & src) {
+//TODO check sizes and dtypes, here or in scatter_aten_
+  auto iter = TensorIterator();
+  iter.dont_compute_common_dtype();
+  iter.dont_resize_outputs();
+  auto self_restrided = restride_dim(self, dim, index.sizes());
+  auto src_restrided = resize_to(src, index.sizes());
+  iter.add_output(self_restrided);
+  iter.add_input(src_restrided, src.device(), src.scalar_type());
+  iter.add_input(index);
   iter.build();
   return iter;
 }
@@ -359,8 +385,8 @@ Tensor& index_add_cpu_(Tensor & self, int64_t dim, const Tensor & index, const T
       for (auto i = 0; i < numel; i++) {
         auto self_i = index_data[i];
         TORCH_CHECK_INDEX((self_i >= 0) && (self_i < self.numel()), "index out of range in self");
-        scalar_t *self_ip = self.data<scalar_t>() + self_i * self_stride;
-        *self_ip += *(source.data<scalar_t>() + i * source_stride);
+        scalar_t *self_ip = self.data_ptr<scalar_t>() + self_i * self_stride;
+        *self_ip += *(source.data_ptr<scalar_t>() + i * source_stride);
       }
     });
   }
@@ -395,6 +421,16 @@ Tensor scatter(const Tensor & self, int64_t dim, const Tensor & index, Scalar so
 
 Tensor scatter_add(const Tensor & self, int64_t dim, const Tensor & index, const Tensor & source) {
   return self.clone(at::MemoryFormat::Preserve).scatter_add_(dim, index, source);
+}
+
+Tensor & scatter_aten_(Tensor & self, int64_t dim, const Tensor & index, const Tensor & src) {
+  auto iter = make_scatter_iterator(self, dim, index, src);
+  DimVector indexed_sizes;
+  DimVector indexed_strides;
+  indexed_sizes.push_back(self.size(dim));
+  indexed_strides.push_back(self.stride(dim)*self.element_size());
+  scatter_aten_stub(self.device().type(), iter, indexed_sizes, indexed_strides);
+  return self;
 }
 
 Tensor masked_scatter(const Tensor & self, const Tensor & mask, const Tensor & source) {

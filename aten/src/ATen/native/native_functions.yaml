@@ -3865,6 +3865,10 @@
     CPU: legacy::cpu::_th_scatter_
     CUDA: legacy::cuda::_th_scatter_
 
+- func: scatter_aten_.src(Tensor(a!) self, int dim, Tensor index, Tensor src) -> Tensor(a!)
+  variants: method
+  
+
 - func: scatter.src(Tensor self, int dim, Tensor index, Tensor src) -> Tensor
   use_c10_dispatcher: full
   variants: function, method

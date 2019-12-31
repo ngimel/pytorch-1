@@ -117,10 +117,19 @@ void index_put_kernel(TensorIterator& iter, IntArrayRef index_size, IntArrayRef 
   });
 }
 
+void scatter_aten_cpu_kernel(TensorIterator& iter, IntArrayRef index_size, IntArrayRef index_stride) {
+    AT_DISPATCH_ALL_TYPES_AND2(at::ScalarType::Half, at::ScalarType::Bool, iter.dtype(), "index_put", [&] {
+      cpu_index_kernel<scalar_t>(iter, index_size, index_stride, [](char* dst, char* src, int64_t offset) {
+        *(scalar_t*)(dst + offset) = *(scalar_t*)src;
+      });
+    });
+}
+
 } // anonymous namespace
 
 
 REGISTER_DISPATCH(index_stub, &index_kernel);
 REGISTER_DISPATCH(index_put_stub, &index_put_kernel);
+REGISTER_DISPATCH(scatter_aten_stub, &scatter_aten_cpu_kernel);
 
 }} // namespace at::native
