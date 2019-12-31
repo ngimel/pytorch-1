@@ -117,7 +117,6 @@ struct AdvancedIndex {
   AdvancedIndex(const Tensor& src, TensorList indices);
 
   Tensor src;
-  Tensor dst;
   std::vector<Tensor> indices;
   DimVector indexed_sizes;
   DimVector indexed_strides;
