@@ -20,6 +20,7 @@ static inline void compare_base_kernel(Tensor& result, Tensor& indice,
     const Tensor& self,
     int64_t dim,
     bool keepdim,
+    int64_t self_dim_size,
     const func_t& f) {
   const int64_t input_ndim = self.dim();
   auto self_sizes = ensure_nonempty_vec(self.sizes().vec());
@@ -53,11 +54,31 @@ static inline void compare_base_kernel(Tensor& result, Tensor& indice,
     auto* result_data_bytes = data[0];
     auto* indice_data_bytes = data[1];
     const auto* self_data_bytes = data[2];
+    using value_t = typename ztype<scalar_t>::value_t;
+    value_t (*zabs_)(scalar_t) = zabs<scalar_t, value_t>;
+
     for (int64_t i = 0; i < n; ++i) {
-      f(
-        (scalar_t*)result_data_bytes, (int64_t*)indice_data_bytes,
-        (scalar_t*)self_data_bytes, self_dim_stride
-      );
+      scalar_t base_number = ((scalar_t*)self_data_bytes)[0];
+      int64_t index = 0;
+      scalar_t* self_data = (scalar_t*)self_data_bytes;
+      for (int64_t ii = 0; ii < self_dim_size; ++ii) {
+        scalar_t value = self_data[ii * self_dim_stride];
+        if (f(zabs_(value), zabs_(base_number))) {//(!(zabs_(value) >= zabs_(min_number))) {
+        //if (!(zabs_(value) >= zabs_(base_number))) {
+          base_number = value;
+          index = ii;
+          if (_isnan<scalar_t>(value)) {
+            break;
+          }
+        }
+      }
+      *((scalar_t*)result_data_bytes) = base_number;
+      *((int64_t*)indice_data_bytes) = index;
+
+      /*  f(
+          (scalar_t*)result_data_bytes, (int64_t*)indice_data_bytes,
+          (scalar_t*)self_data_bytes, self_dim_stride
+        );*/
       result_data_bytes += strides[0];
       indice_data_bytes += strides[1];
       self_data_bytes += strides[2];
@@ -81,27 +102,16 @@ static void min_kernel_impl(
   int64_t self_dim_size = ensure_nonempty_size(self, wrap_dim);
 
   AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND(ScalarType::Bool, self.scalar_type(), "min_cpu", [&] {
-    compare_base_kernel<scalar_t>(result, indice, self, wrap_dim, keepdim, [&] (
-      scalar_t* result_data, int64_t* indice_data,
-      const scalar_t* self_data, auto self_dim_stride) {
-        using value_t = typename ztype<scalar_t>::value_t;
-        value_t (*zabs_)(scalar_t) = zabs<scalar_t, value_t>;
-        scalar_t min_number = self_data[0];
-        int64_t index = 0;
-        for (int64_t i = 0; i < self_dim_size; ++i) {
-          scalar_t value = self_data[i * self_dim_stride];
-          if (!(zabs_(value) >= zabs_(min_number))) {
-            min_number = value;
-            index = i;
-            if (_isnan<scalar_t>(value)) {
-              break;
-            }
-          }
-        }
-        *result_data = min_number;
-        *indice_data = index;
-      }
-    );
+    compare_base_kernel<scalar_t>(
+        result,
+        indice,
+        self,
+        wrap_dim,
+        keepdim,
+        self_dim_size,
+        [](auto val, auto base_num) -> bool {
+          return !(val >= base_num);
+        });
   });
 }
 
@@ -114,29 +124,18 @@ static void max_kernel_impl(
   auto wrap_dim = maybe_wrap_dim(dim, self.dim());
   int64_t self_dim_size = ensure_nonempty_size(self, wrap_dim);
 
-  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND(ScalarType::Bool, self.scalar_type(), "max_cpu", [&] {
-    compare_base_kernel<scalar_t>(result, indice, self, wrap_dim, keepdim, [&] (
-      scalar_t* result_data, int64_t* indice_data,
-      const scalar_t* self_data, auto self_dim_stride) {
-        using value_t = typename ztype<scalar_t>::value_t;
-        value_t (*zabs_)(scalar_t) = zabs<scalar_t, value_t>;
-        scalar_t max_number = self_data[0];
-        int64_t index = 0;
-        for (int64_t i = 0; i < self_dim_size; ++i) {
-          scalar_t value = self_data[i * self_dim_stride];
-          if (!(zabs_(value) <= zabs_(max_number))) {
-            max_number = value;
-            index = i;
-            if (_isnan<scalar_t>(value)) {
-              break;
-            }
-          }
-        }
-        *result_data = max_number;
-        *indice_data = index;
-      }
-    );
-  });
+    AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND(ScalarType::Bool, self.scalar_type(), "min_cpu", [&] {
+    compare_base_kernel<scalar_t>(
+        result,
+        indice,
+        self,
+        wrap_dim,
+        keepdim,
+        self_dim_size,
+        [](auto val, auto base_num) -> bool {
+          return !(val <= base_num);
+        });
+        });
 }
 
 static void where_kernel_impl(TensorIterator &iter, ScalarType condition_type) {
