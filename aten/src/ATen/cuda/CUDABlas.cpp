@@ -286,7 +286,6 @@ void gemm<at::BFloat16>(CUDABLAS_GEMM_ARGTYPES(at::BFloat16)) {
 }
 #endif
 
-
 /* LEVEL 2 BLAS FUNCTIONS */
 
 #define GEMV_CHECK_ARGVALUES(Dtype)           \
@@ -320,27 +319,28 @@ void gemv<float>(CUDABLAS_GEMV_ARGTYPES(float)) {
 
 template <>
 void gemv<at::Half>(CUDABLAS_GEMV_ARGTYPES(at::Half)) {
-  TORCH_CHECK(
-      incx == 1,
-      "at::cuda::blas::gemv<Half>: support for incx != 1 not implemented");
-  TORCH_CHECK(
-      incy == 1,
-      "at::cuda::blas::gemv<Half>: support for incy != 1 not implemented");
+  if (trans != 'n') {
+    std::swap(m, n);
+  }
+  // to take care of incy potentially being >1, instead of multiplying
+  // matrix by column-vector, we'll multiply row-vector by matrix, and get
+  // a row-vector result.
+  // for this, we need to swap m and v
+  // arguments, and to flip a's 'trans'
+  char trans_flipped = trans == 'n' ? 't' : 'n';
   gemm<at::Half>(
-      trans, 'n', m, 1, n, alpha, a, n, x, n, beta, y, m);
+      'n', trans_flipped, 1, m, n, alpha, x, incx, a, lda, beta, y, incy);
 }
 
 #ifdef __HIP_PLATFORM_HCC__
 template <>
 void gemv<at::BFloat16>(CUDABLAS_GEMV_ARGTYPES(at::BFloat16)) {
-  TORCH_CHECK(
-      incx == 1,
-      "at::cuda::blas::gemv<at::BFloat16>: support for incx != 1 not implemented");
-  TORCH_CHECK(
-      incy == 1,
-      "at::cuda::blas::gemv<at::BFloat16>: support for incy != 1 not implemented");
+  if (trans != 'n') {
+    std::swap(m, n);
+  }
+  char trans_flipped = trans == 'n' ? 't' : 'n';
   gemm<at::BFloat16>(
-      trans, 'n', m, 1, n, alpha, a, n, x, n, beta, y, m);
+      'n', trans_flipped, 1, m, n, alpha, x, incx, a, lda, beta, y, incy);
 }
 #endif
 
