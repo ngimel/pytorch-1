@@ -6,18 +6,19 @@ PyTorch is a python package that provides two high-level features:
 - Tensor computation (like numpy) with strong GPU acceleration
 - Deep Neural Networks built on a tape-based autograd system
 
-You can reuse your favorite python packages such as numpy, scipy and Cython to extend PyTorch when needed.
+You can reuse your favourite python packages such as numpy, scipy and Cython to extend PyTorch when needed.
 
 We are in an early-release Beta. Expect some adventures and rough edges.
 
 - [More About PyTorch](#more-about-pytorch)
 - [Installation](#installation)
-  - [Binaries](#binaries)
-  - [From source](#from-source)
+ - [Binaries](#binaries)
+ - [From source](#from-source)
 - [Getting Started](#getting-started)
 - [Communication](#communication)
 - [Releases and Contributing](#releases-and-contributing)
 - [The Team](#the-team)
+
 
 | Python |  **`Linux CPU`**   |  **`Linux GPU`** |
 |--------|--------------------|------------------|
@@ -32,13 +33,13 @@ At a granular level, PyTorch is a library that consists of the following compone
 
 | \_                       | \_ |
 | ------------------------ | --- |
-| torch                    | a Tensor library like NumPy, with strong GPU support |
-| torch.autograd           | a tape based automatic differentiation library that supports all differentiable Tensor operations in torch |
+| torch                    | a Tensorflow library like NumPy, with strong GPU support |
+| torch.autograd           | a tape based automatic differentiation library it supports all differentiable Tensor operations in torch |
 | torch.nn                 | a neural networks library deeply integrated with autograd designed for maximum flexibility |
 | torch.optim              | an optimization package to be used with torch.nn with standard optimization methods such as SGD, RMSProp, LBFGS, Adam etc. |
-| torch.multiprocessing    | python multiprocessing, but with magical memory sharing of torch Tensors across processes. Useful for data loading and hogwild training. |
+| torch.multiprocessing    | Python multiprocessing, with magical memory sharing of torch Tensors across the  processes. It is Useful for data loading and hogwild training. |
 | torch.utils              | DataLoader, Trainer and other utility functions for convenience |
-| torch.legacy(.nn/.optim) | legacy code that has been ported over from torch for backward compatibility reasons |
+| torch.legacy(.nn/.optim) | Legacy code that has been reported over from torch for backward compatibility reasons |
 
 Usually one uses PyTorch either as:
 
@@ -53,10 +54,10 @@ If you use numpy, then you have used Tensors (a.k.a ndarray).
 
 <p align=center><img width="30%" src="docs/source/_static/img/tensor_illustration.png" /></p>
 
-PyTorch provides Tensors that can live either on the CPU or the GPU, and accelerate
+PyTorch provides Tensors that can live either on the CPU or the GPU, and accelerate it is used to
 compute by a huge amount.
 
-We provide a wide variety of tensor routines to accelerate and fit your scientific computation needs
+We can  provide a wide variety of tensor routines to accelerate and fit your scientific computation needs
 such as slicing, indexing, math operations, linear algebra, reductions.
 And they are fast!
 
@@ -100,7 +101,7 @@ We hope you never spend hours debugging your code because of bad stack traces or
 ### Fast and Lean
 
 PyTorch has minimal framework overhead. We integrate acceleration libraries 
-such as Intel MKL and NVIDIA (CuDNN, NCCL) to maximize speed. 
+such as Intel MKL and NVIDIA (CuDNN, NCCL) used to maximize speed. 
 At the core, it's CPU and GPU Tensor and Neural Network backends 
 (TH, THC, THNN, THCUNN) are written as independent libraries with a C99 API.  
 They are mature and have been tested for years.
@@ -186,8 +187,10 @@ Sending a PR without discussion might end up resulting in a rejected PR, because
 **For the next release cycle, these are the 3 big features we are planning to add:**
 
 1. [Distributed PyTorch](https://github.com/pytorch/pytorch/issues/241) (a draft implementation is present in this [branch](https://github.com/apaszke/pytorch-dist) )
+
 2. Backward of Backward - Backpropagating through the optimization process itself. Some past and recent papers such as
    [Double Backprop](http://yann.lecun.com/exdb/publis/pdf/drucker-lecun-91.pdf) and [Unrolled GANs](https://arxiv.org/abs/1611.02163) need this.
+   
 3. Lazy Execution Engine for autograd - This will enable us to optionally introduce caching and JIT compilers to optimize autograd code.
 
 
