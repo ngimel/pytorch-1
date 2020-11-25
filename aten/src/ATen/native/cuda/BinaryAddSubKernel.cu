@@ -7,6 +7,7 @@
 #include <ATen/cuda/nvrtc_stub/ATenNVRTC.h>
 #include <torch/csrc/jit/resource_guard.h>
 #include <sstream>
+#include <chrono>
 #include <torch/csrc/jit/frontend/code_template.h>
 
 // NOTE: CUDA on Windows requires that the enclosing function
@@ -158,7 +159,7 @@ static auto cuda_template = torch::jit::CodeTemplate(R"(
         int a_offset = a_accessor->index_to_offset(i);
         int b_offset = b_accessor->index_to_offset(i);
         // TODO: allow for custom names
-        out[out_offset] = foo(a[a_offset], b[b_offset]);
+        out[out_offset] = foo<${dtype}>(a[a_offset], b[b_offset]);
       }
     }
   }
@@ -167,32 +168,50 @@ static auto cuda_template = torch::jit::CodeTemplate(R"(
   #define THREAD_WORK_SIZE 4
   #define BLOCK_WORK_SIZE (THREAD_WORK_SIZE * num_threads)
 
-  extern "C" __global__
-  void vectorized_elementwise_kernel(int numel, ${args}) {
-    const int remaining = numel - BLOCK_WORK_SIZE * blockIdx.x;
+  // extern "C" __global__
+  // void vectorized_elementwise_kernel(int numel) {
+  //   const int remaining = numel - BLOCK_WORK_SIZE * blockIdx.x;
 
-    if (remaining < BLOCK_WORK_SIZE) {
+  //   if (remaining < BLOCK_WORK_SIZE) {
 
-    } else {
-      int idx = blockIdx.x;
-      using vec_t = aligned_vector<scalar_t, vec_size>;
-      vec_t *from_ = reinterpret_cast<vec_t *>(from);
-      int thread_idx = threadIdx.x;
-      #pragma unroll
-      for (int i = 0; i < loop_size; i++) {
-        int index = thread_idx + i * num_threads;
-        vec_t v = from_[index];
-        #pragma unroll
-        for (int j = 0; j < vec_size; j++) {
-          to(vec_size * i + j) = v.val[j];
-        }
-      }
-    }
-  }
+  //   } else {
+  //     int idx = blockIdx.x;
+  //     using vec_t = aligned_vector<scalar_t, vec_size>;
+  //     vec_t *from_ = reinterpret_cast<vec_t *>(from);
+  //     int thread_idx = threadIdx.x;
+  //     #pragma unroll
+  //     for (int i = 0; i < loop_size; i++) {
+  //       int index = thread_idx + i * num_threads;
+  //       vec_t v = from_[index];
+  //       #pragma unroll
+  //       for (int j = 0; j < vec_size; j++) {
+  //         to(vec_size * i + j) = v.val[j];
+  //       }
+  //     }
+  //   }
+  // }
 
 
 // instantiations here
 )");
+
+static const std::unordered_map<ScalarType, std::string> dtype_map {{kFloat,"float"}, {kDouble, "double"}};
+static const std::unordered_map<ScalarType, int> dtype_to_int {{kFloat,0}, {kDouble, 1}};
+
+char inline compute_key(const ScalarType dtype, const bool contiguous, const bool no_dynamic_casting) {
+  int key = 0;
+  key += no_dynamic_casting ? 1 : 0;
+  key += contiguous ? 2 : 0;
+  int dtype_int;
+  auto dtype_int_iter = dtype_to_int.find(dtype);
+  if (dtype_int_iter != dtype_to_int.end()){
+     dtype_int = dtype_int_iter->second;
+  } else {
+    TORCH_CHECK(false, "unexpected dype");
+  }
+  key += 4*dtype_int;
+  return key;
+}
 
 } // anonymous namespace
 
@@ -200,12 +219,6 @@ Tensor foo_cuda(const Tensor& self, const Tensor& other) {
   Tensor result;
   auto iter = TensorIterator::binary_op(result, self, other);
 
-  std::cout << "dtype 0: " << iter.dtype(0) << std::endl;
-  std::cout << "dtype 1: " << iter.dtype(0) << std::endl;
-  std::cout << "dtype 2: " << iter.dtype(0) << std::endl;
-  std::cout << "iter.tensor(0).scalar_type(): " << iter.tensor(0).scalar_type() << std::endl;
-  std::cout << "iter.tensor(1).scalar_type(): " << iter.tensor(1).scalar_type() << std::endl;
-  std::cout << "iter.tensor(2).scalar_type(): " << iter.tensor(2).scalar_type() << std::endl;
   std::cout << "common_dtype: " << iter.common_dtype() << std::endl;
 
   // launch_vectorized_kernel path
@@ -227,27 +240,7 @@ Tensor foo_cuda(const Tensor& self, const Tensor& other) {
 
 
   std::vector<void*> args;
-  int64_t numel = iter.numel();
   args.push_back((void*)&numel);
-
-  std::cout << "iter.ntensors(): " << iter.ntensors() << std::endl;
-
-  #define stringify(...) std::string("__device__ __forceinline__ " #__VA_ARGS__)
-  const auto s = stringify(
-    float foo(float a, float b) {
-      return a + b;
-    }
-  );
-  #undef stringify
-
-  std::cout << "s: " << s << std::endl;
-
-  torch::jit::TemplateEnv env;
-  env.s("function", s);
-  std::string code = cuda_template.format(env);
-
-  std::cout << "code: " << code << std::endl;
-
   std::vector<TensorAccessor> accessors;
   for (auto i = decltype(iter.ntensors()){0}; i < iter.ntensors(); ++i) {
     accessors.emplace_back(iter.shape(), iter.strides(i), iter.element_size(i));
@@ -257,15 +250,56 @@ Tensor foo_cuda(const Tensor& self, const Tensor& other) {
     args.push_back((void*)&accessor);
   }
 
-  // Acquires device and NVRTC properties (for compile arch and occupancy
-  // calculations)
+
+  std::cout << "iter.ntensors(): " << iter.ntensors() << std::endl;
+
+  const auto& nvrtc = at::globalContext().getNVRTC();
+  CUfunction function;
+  static std::unordered_map<char, CUfunction> kernelCache;
+  //TODO use needs_dynamic_casting
+  bool no_dynamic_casting = iter.dtype(0) == iter.common_dtype() && iter.dtype(1) == iter.common_dtype() && iter.dtype(2) == iter.common_dtype();
+
+  auto key = compute_key(iter.common_dtype(), iter.is_contiguous(), no_dynamic_casting);
+  auto start = std::chrono::high_resolution_clock::now();
+  auto found_fn = kernelCache.find(key);
+  if (found_fn != kernelCache.end()) {
+    function = found_fn->second;
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::nanoseconds elapsed_seconds = end-start;
+    std::cout << "lookup time " << elapsed_seconds.count() << " ns \n";
+  } else {
+    std::cout << "building the kernel\n";
+
+  #define stringify(...) std::string("template <typename T> __device__ __forceinline__ " #__VA_ARGS__)
+  const auto s = stringify(
+    T foo(T a, T b) {
+      return a + b;
+    }
+  );
+  #undef stringify
+
+  torch::jit::TemplateEnv env;
+  env.s("function", s);
+  std::string string_dtype;
+  auto dtype_iter = dtype_map.find(iter.common_dtype());
+  if (dtype_iter != dtype_map.end()){
+     string_dtype = dtype_iter->second;
+  } else {
+    TORCH_CHECK(false, "unexpected dype");
+  }
+  env.s("dtype", string_dtype);
+  std::string code = cuda_template.format(env);
+
+  std::cout << "code: " << code << "\n";
+
+// Acquires device and NVRTC properties (for compile arch and occupancy
+// calculations)
   cudaDeviceProp* prop = at::cuda::getCurrentDeviceProperties();
   int major, minor;
   getMajorMinor(prop, major, minor);
 
   // Creates the NVRTC program
   nvrtcProgram program;
-  const auto& nvrtc = at::globalContext().getNVRTC();
   AT_CUDA_NVRTC_CHECK(nvrtc.nvrtcCreateProgram(
       &program, code.c_str(), nullptr, 0, nullptr, nullptr));
 
@@ -289,7 +323,7 @@ Tensor foo_cuda(const Tensor& self, const Tensor& other) {
   }
 
   CUmodule module;
-  CUfunction function;
+
   ::torch::jit::ResourceGuard holdProgram([&] { nvrtc.nvrtcDestroyProgram(&program); });
   std::vector<char> ptx;
   size_t ptx_size;
@@ -301,11 +335,12 @@ Tensor foo_cuda(const Tensor& self, const Tensor& other) {
   const std::string name = "foo_kernel";
   AT_CUDA_DRIVER_CHECK(
     nvrtc.cuModuleGetFunction(&function, module, name.c_str()));
-
-  int maxBlocks;
-  AT_CUDA_DRIVER_CHECK(nvrtc.cuOccupancyMaxActiveBlocksPerMultiprocessor(
-    &maxBlocks, function, 128, 0));
-  maxBlocks *= prop->multiProcessorCount;
+  kernelCache.insert(std::make_pair(key,function));
+  }
+  //int maxBlocks;
+  //AT_CUDA_DRIVER_CHECK(nvrtc.cuOccupancyMaxActiveBlocksPerMultiprocessor(
+  //  &maxBlocks, function, 128, 0));
+  //maxBlocks *= prop->multiProcessorCount;
 
   // const auto nBlocks = std::min(maxBlocks_, ceilDiv(numel, kBlockSize));
   const int nBlocks = 1;
