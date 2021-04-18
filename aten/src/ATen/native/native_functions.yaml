@@ -377,6 +377,14 @@
   dispatch:
     CompositeExplicitAutograd: add_
 
+- func: dotmv(Tensor self, Tensor mat, Tensor vec, *, Scalar beta=1, Scalar alpha=1) -> Tensor
+  structured_delegate: addmv.out
+  variants: function, method
+
+- func: dotmv_(Tensor(a!) self, Tensor mat, Tensor vec, *, Scalar beta=1, Scalar alpha=1) -> Tensor(a!)
+  structured_delegate: addmv.out
+  variants: function, method
+
 - func: addmv(Tensor self, Tensor mat, Tensor vec, *, Scalar beta=1, Scalar alpha=1) -> Tensor
   structured_delegate: addmv.out
   variants: function, method

@@ -365,13 +365,28 @@ def gen_variable_type_shard(
         f = fn.func
         name = cpp.name(f.func)
         formals = gen_formals(f)
-
-        type_definitions.append(METHOD_DEFINITION.substitute(
+        if cpp.name(f.func) not in ("dotmv", "dotmv_"):
+            type_definitions.append(METHOD_DEFINITION.substitute(
+                return_type=cpp.returns_type(f.func.returns).cpp_type(),
+                type_wrapper_name=type_wrapper_name(f),
+                type_definition_body=emit_body(fn),
+                formals=formals,
+            ))
+        if cpp.name(f.func) == "addmv":
+            type_definitions.append(METHOD_DEFINITION.substitute(
             return_type=cpp.returns_type(f.func.returns).cpp_type(),
-            type_wrapper_name=type_wrapper_name(f),
+            type_wrapper_name="dotmv",
             type_definition_body=emit_body(fn),
             formals=formals,
-        ))
+            ))
+        if cpp.name(f.func) == "addmv_":
+            type_definitions.append(METHOD_DEFINITION.substitute(
+            return_type=cpp.returns_type(f.func.returns).cpp_type(),
+            type_wrapper_name="dotmv_",
+            type_definition_body=emit_body(fn),
+            formals=formals,
+            ))
+
         wrapper_registrations.append(gen_wrapper_registration(f))
 
         # See Note [Manual Backend kernels]

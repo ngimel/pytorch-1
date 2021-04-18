@@ -527,7 +527,12 @@ generate_super=self.g.out.structured_inherits is not None
 """
 
         elif self.target is Target.REGISTRATION:
-            return f'm.impl("{f.func.name}", TORCH_FN({sig.name()}));'
+            if str(f.func.name) == "addmv" and self.dispatch_key in (DispatchKey.CPU, DispatchKey.CUDA):
+                return f'm.impl("{f.func.name}", TORCH_FN({sig.name()}));\n m.impl("dotmv", TORCH_FN({sig.name()})); '
+            elif str(f.func.name) == "addmv_" and self.dispatch_key in (DispatchKey.CPU, DispatchKey.CUDA):
+                return f'm.impl("{f.func.name}", TORCH_FN({sig.name()}));\n m.impl("dotmv_", TORCH_FN({sig.name()})); '
+            else:
+                return f'm.impl("{f.func.name}", TORCH_FN({sig.name()}));'
         else:
             assert_never(self.target)
             # Silence mypy's "Missing return statement" error
