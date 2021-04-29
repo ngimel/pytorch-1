@@ -736,6 +736,14 @@ void TensorIteratorBase::unsafe_replace_operand(int arg, void* data) {
   operands_[arg].data = data;
 }
 
+void TensorIteratorBase::flip_stride(int arg, int64_t dim){
+  TORCH_INTERNAL_ASSERT_DEBUG_ONLY(dim < ndim());
+  auto op = operands_[arg];
+  int64_t size = shape_[dim];
+  op.data = ((char*)op.data) + op.stride_bytes[dim] * size;
+  op.stride_bytes[dim] = -op.stride_bytes[dim];
+}
+
 void TensorIteratorBase::narrow(int dim, int64_t start, int64_t size) {
   TORCH_INTERNAL_ASSERT(dim < ndim() && size >= 1);
   shape_[dim] = size;

@@ -230,6 +230,7 @@ struct TORCH_API TensorIteratorBase : public impl::MetaBase {
   /// The new pointer should have the same sizes, strides and dtype as the
   /// original
   void unsafe_replace_operand(int arg, void* data);
+  void flip_stride(int arg, int64_t dim);
 
   /// Splits this TensorIterator into two iterators. Together they iterate over
   /// the entire operation. Used by `with_32bit_indexing()`.
