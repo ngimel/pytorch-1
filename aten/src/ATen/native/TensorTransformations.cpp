@@ -4,6 +4,7 @@
 #include <ATen/NativeFunctions.h>
 #include <ATen/Parallel.h>
 #include <c10/util/Exception.h>
+#include <ATen/native/cpu/Loops.h>
 
 #include <algorithm>
 #include <vector>
@@ -50,41 +51,68 @@ Tensor flip_cpu(const Tensor& self, IntArrayRef dims) {
   const int64_t total_dims = in_tensor.dim();
   auto flip_dims_b = at::dim_list_to_bitset(dims, total_dims);
   Tensor out_tensor = at::empty_like(in_tensor, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
-
-  // create contiguous strides for input tensor
-  auto stride_contiguous_v = std::vector<int64_t>(total_dims);
-  for (int64_t i = total_dims - 1; i >= 0; i--) {
-    if (i == total_dims - 1) {
-      stride_contiguous_v[i] = 1;
-    } else {
-      stride_contiguous_v[i] = std::max<int64_t>(in_tensor.size(i + 1), 1) * stride_contiguous_v[i + 1];
-    }
+  TensorIteratorConfig config;
+  //create dummy output with 0 strides at flipped dimension, to prevent tensorIterator from coalescing flipped dims
+  auto shape = out_tensor.sizes().vec();
+  auto strides = out_tensor.strides().vec();
+    for(int64_t i = 0; i < total_dims; i++) {
+      if(flip_dims_b[i]) {
+        strides[i] =0;
+      }
   }
-
-  if (in_tensor.is_quantized()) {
-    AT_DISPATCH_QINT_AND_SUB_BYTE_TYPES(in_tensor.scalar_type(),
-                                        "flip_quantized_cpu", [&] {
-      flip_cpu_kernel<scalar_t>(
-        total_dims,
-        stride_contiguous_v,
-        flip_dims_b,
-        in_tensor,
-        out_tensor
-      );
-    });
-  } else {
-    AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(kBool, kHalf, kBFloat16,
+  auto restrided_out = out_tensor.as_strided(out_tensor.sizes(), strides);
+  config.set_check_mem_overlap(false)
+        .check_all_same_dtype(false)
+        .declare_static_dtype_and_device(self.scalar_type(), self.device())
+        .add_output(out_tensor)
+        .add_input(self)
+        .add_input(restrided_out);
+  auto iter = config.build();
+  iter.flip_strides(0, 2); //flip strides of the real output using dummy output as model (dimension should be flipped where stride is 0)
+  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(kBool, kHalf, kBFloat16,
                                           in_tensor.scalar_type(),
                                           "flip_cpu", [&] {
-      flip_cpu_kernel<scalar_t>(
-        total_dims,
-        stride_contiguous_v,
-        flip_dims_b,
-        in_tensor,
-        out_tensor
-      );
-    });
-  }
+      cpu_kernel(iter,
+        [](scalar_t a, scalar_t b) -> scalar_t {
+          return a;
+        });
+     });
+
+
+  // // create contiguous strides for input tensor
+  // auto stride_contiguous_v = std::vector<int64_t>(total_dims);
+  // for (int64_t i = total_dims - 1; i >= 0; i--) {
+  //   if (i == total_dims - 1) {
+  //     stride_contiguous_v[i] = 1;
+  //   } else {
+  //     stride_contiguous_v[i] = std::max<int64_t>(in_tensor.size(i + 1), 1) * stride_contiguous_v[i + 1];
+  //   }
+  // }
+
+  // if (in_tensor.is_quantized()) {
+  //   AT_DISPATCH_QINT_AND_SUB_BYTE_TYPES(in_tensor.scalar_type(),
+  //                                       "flip_quantized_cpu", [&] {
+  //     flip_cpu_kernel<scalar_t>(
+  //       total_dims,
+  //       stride_contiguous_v,
+  //       flip_dims_b,
+  //       in_tensor,
+  //       out_tensor
+  //     );
+  //   });
+  // } else {
+  //   AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(kBool, kHalf, kBFloat16,
+  //                                         in_tensor.scalar_type(),
+  //                                         "flip_cpu", [&] {
+  //     flip_cpu_kernel<scalar_t>(
+  //       total_dims,
+  //       stride_contiguous_v,
+  //       flip_dims_b,
+  //       in_tensor,
+  //       out_tensor
+  //     );
+  //   });
+  // }
 
   return out_tensor;
 }
